@@ -1,0 +1,164 @@
+% Limpieza de entorno (clearvars es más seguro y eficiente que clear all)
+clearvars; close all; clc;
+tic;
+
+disp('...');
+
+% Declaración de variables simbólicas
+syms t g a cero pi real
+syms th1(t) th2(t) th3(t) th4(t) th5(t) th6(t)      % Articulaciones
+syms th1p(t) th2p(t) th3p(t) th4p(t) th5p(t) th6p(t)    % Velocidades
+syms th1pp(t) th2pp(t) th3pp(t) th4pp(t) th5pp(t) th6pp(t) % Aceleraciones
+syms m1 m2 m3 m4 m5 m6 real % Masas
+syms Ixx1 Iyy1 Izz1 Ixx2 Iyy2 Izz2 Ixx3 Iyy3 Izz3 Ixx4 Iyy4 Izz4 Ixx5 Iyy5 Izz5 Ixx6 Iyy6 Izz6 real % Inercias
+syms l1 l2 l3 l4 l5 l6 lc1 lc2 lc3 lc4 lc5 lc6 real % Longitudes
+
+% Vectores generalizados
+Q = [th1; th2; th3; th4; th5; th6];
+Qp = [th1p; th2p; th3p; th4p; th5p; th6p];
+
+% Configuración del robot (0 = rotacional, 1 = prismática)
+RP = [0 0 1 0 0 0];
+GDL = length(RP);
+
+%% 1. CINEMÁTICA DIRECTA (Definición de Transformaciones Locales)
+P = sym(zeros(3, 1, GDL));
+R = sym(zeros(3, 3, GDL));
+
+% Articulación 1 
+P(:,:,1) = [0; 0; l1];
+R(:,:,1) = [cos(th1), -sin(th1), 0; sin(th1), cos(th1), 0; 0, 0, 1] * [1, 0, 0; 0, 0, 1; 0, -1, 0];
+% Articulación 2
+P(:,:,2) = [0; 0; l2];
+R(:,:,2) = [cos(th2), -sin(th2), 0; sin(th2), cos(th2), 0; 0, 0, 1] * [1, 0, 0; 0, 0, -1; 0, 1, 0];
+% Articulación 3 (prismático) 
+P(:,:,3) = [0; 0; l3 + th3];
+R(:,:,3) = eye(3);
+% Articulación 4
+P(:,:,4) = [0; 0; l4];
+R(:,:,4) = [cos(th4), -sin(th4), 0; sin(th4), cos(th4), 0; 0, 0, 1] * [1, 0, 0; 0, 0, 1; 0, -1, 0];
+% Articulación 5
+P(:,:,5) = [l5*cos(th5); -l5*sin(th5); 0];
+R(:,:,5) = [cos(th5), -sin(th5), 0; sin(th5), cos(th5), 0; 0, 0, 1] * [1, 0, 0; 0, 0, -1; 0, 1, 0];
+% Articulación 6
+P(:,:,6) = [0; 0; 0];
+R(:,:,6) = [cos(th6), -sin(th6), 0; sin(th6), cos(th6), 0; 0, 0, 1];
+
+% Matrices Globales
+T = sym(zeros(4, 4, GDL));
+RO = sym(zeros(3, 3, GDL));
+PO = sym(zeros(3, 1, GDL));
+
+for i = 1:GDL
+    A = [R(:,:,i), P(:,:,i); zeros(1,3), 1];
+    if i == 1
+        T(:,:,i) = simplify(A);
+    else
+        T(:,:,i) = simplify(T(:,:,i-1) * A);
+    end
+    RO(:,:,i) = T(1:3, 1:3, i);
+    PO(:,:,i) = T(1:3, 4, i);
+end
+
+%% 2. JACOBIANOS Y VELOCIDADES POR ESLABÓN
+disp('...');
+V = sym(zeros(3, GDL));
+W = sym(zeros(3, GDL));
+
+for j = 1:GDL
+    Jv = sym(zeros(3, GDL));
+    Jw = sym(zeros(3, GDL));
+    
+    for k = 1:j
+        % Eje z y posición del marco anterior (o inercial si k=1)
+        if k == 1
+            z_prev = [0; 0; 1];
+            p_prev = [0; 0; 0];
+        else
+            z_prev = RO(:, 3, k-1);
+            p_prev = PO(:, :, k-1);
+        end
+        
+        if RP(k) == 0 % Junta Rotacional
+            Jv(:, k) = cross(z_prev, PO(:,:,j) - p_prev);
+            Jw(:, k) = z_prev;
+        else          % Junta Prismática
+            Jv(:, k) = z_prev;
+            Jw(:, k) = [0; 0; 0];
+        end
+    end
+    
+    % Calculamos la velocidad lineal y angular del eslabón j
+    V(:, j) = simplify(Jv * Qp);
+    W(:, j) = simplify(Jw * Qp);
+end
+
+%% 3. CENTROS DE MASA Y MATRICES DE INERCIA
+% Sustitución a distancia de centro de masa (lc)
+P_lc = sym(zeros(3, 1, GDL));
+l_vars = [l1, l2, l3, l4, l5, l6];
+lc_vars = [lc1, lc2, lc3, lc4, lc5, lc6];
+
+for i = 1:GDL
+    P_lc(:,:,i) = subs(P(:,:,i), l_vars(i), lc_vars(i));
+end
+
+% Posiciones globales de los centros de masa y rotación de Inercias
+Pos_cm = sym(zeros(3, 1, GDL));
+I_local = { diag([Ixx1, Iyy1, Izz1]), diag([Ixx2, Iyy2, Izz2]), ...
+            diag([Ixx3, Iyy3, Izz3]), diag([Ixx4, Iyy4, Izz4]), ...
+            diag([Ixx5, Iyy5, Izz5]), diag([Ixx6, Iyy6, Izz6]) };
+I_global = sym(zeros(3, 3, GDL));
+Vc = sym(zeros(3, GDL)); % Velocidades de los CoM
+masas = [m1, m2, m3, m4, m5, m6];
+
+for i = 1:GDL
+    % Inercia global: R * I * R^T
+    I_global(:,:,i) = RO(:,:,i) * I_local{i} * RO(:,:,i).';
+    
+    if i == 1
+        P_g = P_lc(:,:,i); % El marco 0 es el global
+        Pos_cm(:,:,i) = P_g;
+        Vc(:, i) = cross(W(:,i), P_g); 
+    else
+        P_g = RO(:,:,i-1) * P_lc(:,:,i);
+        Pos_cm(:,:,i) = PO(:,:,i-1) + P_g;
+        Vc(:, i) = V(:,i-1) + cross(W(:,i), P_g);
+    end
+end
+
+%% 4. ENERGÍA CINÉTICA Y POTENCIAL
+disp('...');
+K_Total = sym(0);
+U_Total = sym(0);
+
+for i = 1:GDL
+    % Energía Cinética (Traslacional + Rotacional)
+    K_i = 0.5 * masas(i) * (Vc(:,i).' * Vc(:,i)) + 0.5 * W(:,i).' * I_global(:,:,i) * W(:,i);
+    K_Total = K_Total + simplify(K_i);
+    
+    % Energía Potencial (m * g * h)
+    U_i = masas(i) * g * Pos_cm(3, 1, i);
+    U_Total = U_Total + simplify(U_i);
+end
+
+K_Total = simplify(K_Total);
+U_Total = simplify(U_Total);
+
+%% 5. MODELO DINÁMICO (LAGRANGIANO Y HAMILTONIANO)
+% L = K - U
+Lagrangiano = simplify(K_Total - U_Total);
+% H = K + U
+H = simplify(K_Total + U_Total);
+
+disp('====================================================');
+disp('Lagrangiano (L) obtenido:');
+disp('====================================================');
+pretty(Lagrangiano); 
+
+disp('====================================================');
+disp('Energía Total (Hamiltoniano) obtenida:');
+disp('====================================================');
+pretty(H);
+
+toc;
